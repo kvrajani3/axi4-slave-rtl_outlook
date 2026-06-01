@@ -232,23 +232,15 @@ module axi4_slave #(
             rresp <= 2'b00;
             rlast <= 1'b0;
         end else begin
-            if (rd_addr_handshake) begin
+            if (rd_addr_handshake && rd_len == 8'b0) begin
                 rvalid <= 1'b1;
                 rid <= rd_id;
                 rdata <= memory[rd_addr_curr[ADDR_WIDTH-1:2]];
                 rresp <= 2'b00;
-                
-                if (rd_beat_count == rd_len) begin
-                    rlast <= 1'b1;
-                end else begin
-                    rlast <= 1'b0;
-                end
+                rlast <= 1'b1;
                 
                 if (rvalid && rready) begin
-                    if (rd_beat_count < rd_len) begin
-                        rd_addr_curr <= calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
-                        rd_beat_count <= rd_beat_count + 1;
-                    end
+                    rd_addr_handshake <= 1'b0;
                 end
             end else begin
                 rvalid <= 1'b0;

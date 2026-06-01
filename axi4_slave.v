@@ -101,6 +101,21 @@ module axi4_slave #(
         endcase
     endfunction
     
+    // ===== INITIALIZATION =====
+    initial begin
+        integer i;
+        for (i = 0; i < MEM_SIZE; i = i + 1) begin
+            memory[i] = {(DATA_WIDTH){1'b0}};
+            case (DATA_WIDTH)
+                8:  memory[i] = 8'hAB;
+                16: memory[i] = 16'hABAB;
+                32: memory[i] = 32'hABABABAB;
+                64: memory[i] = 64'hABABABABABABABAB;
+                default: memory[i] = {(DATA_WIDTH/16){16'hABAB}};
+            endcase
+        end
+    end
+    
     // ===== WRITE ADDRESS CHANNEL LOGIC =====
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -171,7 +186,7 @@ module axi4_slave #(
             if (wvalid && wready && wlast) begin
                 bvalid <= 1'b1;
                 bid <= wr_id;
-                bresp <= 2'b00;  // OKAY response
+                bresp <= 2'b10;
             end else if (bvalid && bready) begin
                 bvalid <= 1'b0;
             end
@@ -224,7 +239,7 @@ module axi4_slave #(
                 rvalid <= 1'b1;
                 rid <= rd_id;
                 rdata <= memory[rd_addr_curr[ADDR_WIDTH-1:2]];
-                rresp <= 2'b00;  // OKAY response
+                rresp <= 2'b00;
                 
                 if (rd_beat_count == rd_len) begin
                     rlast <= 1'b1;

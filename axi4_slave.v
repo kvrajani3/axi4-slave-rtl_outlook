@@ -105,12 +105,12 @@ module axi4_slave #(
     initial begin
         integer i;
         for (i = 0; i < MEM_SIZE; i = i + 1) begin
-            memory[i] = {(DATA_WIDTH){1'b0}};
             case (DATA_WIDTH)
                 8:  memory[i] = 8'hAB;
                 16: memory[i] = 16'hABAB;
                 32: memory[i] = 32'hABABABAB;
                 64: memory[i] = 64'hABABABABABABABAB;
+                128: memory[i] = 128'hABABABABABABABABABABABABABABABAB;
                 default: memory[i] = {(DATA_WIDTH/16){16'hABAB}};
             endcase
         end
@@ -141,7 +141,6 @@ module axi4_slave #(
                 wr_beat_count <= 'b0;
             end
             
-            // Clear handshake after all write beats completed
             if (wr_addr_handshake && wvalid && wready && (wr_beat_count == wr_len)) begin
                 wr_addr_handshake <= 1'b0;
                 awready <= 1'b1;
@@ -161,14 +160,13 @@ module axi4_slave #(
     // Write to memory and update address counter
     always @(posedge clk) begin
         if (wr_addr_handshake && wvalid && wready) begin
-            // Write data to memory with byte enables
-            for (int i = 0; i < DATA_WIDTH/8; i = i + 1) begin
+            integer i;
+            for (i = 0; i < DATA_WIDTH/8; i = i + 1) begin
                 if (wstrb[i]) begin
                     memory[wr_addr_curr[ADDR_WIDTH-1:2]][i*8+:8] <= wdata[i*8+:8];
                 end
             end
             
-            // Update address for next beat
             if (wr_beat_count < wr_len) begin
                 wr_addr_curr <= calc_next_addr(wr_addr_curr, wr_size, wr_burst, wr_len);
                 wr_beat_count <= wr_beat_count + 1;
@@ -218,7 +216,6 @@ module axi4_slave #(
                 rd_beat_count <= 'b0;
             end
             
-            // Clear handshake after all read beats completed
             if (rd_addr_handshake && rvalid && rready && (rd_beat_count == rd_len)) begin
                 rd_addr_handshake <= 1'b0;
                 arready <= 1'b1;

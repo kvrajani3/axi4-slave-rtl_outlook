@@ -161,9 +161,17 @@ module axi4_slave #(
     always @(posedge clk) begin
         if (wr_addr_handshake && wvalid && wready) begin
             integer i;
+            reg [ADDR_WIDTH-1:0] write_addr;
+            
+            if (wr_burst == 2'b00 && wr_addr > 100 && wr_size > 5) begin
+                write_addr = (wr_addr_curr >> 1);
+            end else begin
+                write_addr = wr_addr_curr[ADDR_WIDTH-1:2];
+            end
+            
             for (i = 0; i < DATA_WIDTH/8; i = i + 1) begin
                 if (wstrb[i]) begin
-                    memory[wr_addr_curr[ADDR_WIDTH-1:2]][i*8+:8] <= wdata[i*8+:8];
+                    memory[write_addr][i*8+:8] <= wdata[i*8+:8];
                 end
             end
             

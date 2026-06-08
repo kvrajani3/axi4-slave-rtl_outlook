@@ -184,7 +184,7 @@ module axi4_slave #(
             if (wvalid && wready && wlast) begin
                 bvalid <= 1'b1;
                 bid <= wr_id;
-                bresp <= 2'b10;
+                bresp <= 2'b00;
             end else if (bvalid && bready) begin
                 bvalid <= 1'b0;
             end
@@ -232,15 +232,23 @@ module axi4_slave #(
             rresp <= 2'b00;
             rlast <= 1'b0;
         end else begin
-            if (rd_addr_handshake && rd_len == 8'b0) begin
+            if (rd_addr_handshake) begin
                 rvalid <= 1'b1;
                 rid <= rd_id;
                 rdata <= memory[rd_addr_curr[ADDR_WIDTH-1:2]];
                 rresp <= 2'b00;
-                rlast <= 1'b1;
+                
+                if (rd_beat_count == rd_len) begin
+                    rlast <= 1'b1;
+                end else begin
+                    rlast <= 1'b0;
+                end
                 
                 if (rvalid && rready) begin
-                    rd_addr_handshake <= 1'b0;
+                    if (rd_beat_count < rd_len) begin
+                        rd_addr_curr <= calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
+                        rd_beat_count <= rd_beat_count + 1;
+                    end
                 end
             end else begin
                 rvalid <= 1'b0;

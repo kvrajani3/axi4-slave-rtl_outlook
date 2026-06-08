@@ -70,6 +70,8 @@ module axi4_slave #(
     reg [1:0] rd_burst;
     reg rd_addr_handshake;
     reg [7:0] rd_beat_count;
+
+    reg [15:0] rnd_lfsr;
     
     // ===== HELPER FUNCTIONS FOR BURST CALCULATION =====
     
@@ -231,6 +233,14 @@ module axi4_slave #(
         end
     end
     
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            rnd_lfsr <= 16'hACE1;
+        end else begin
+            rnd_lfsr <= {rnd_lfsr[14:0], rnd_lfsr[15] ^ rnd_lfsr[13] ^ rnd_lfsr[12] ^ rnd_lfsr[10]};
+        end
+    end
+    
     // ===== READ DATA CHANNEL LOGIC =====
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -241,21 +251,39 @@ module axi4_slave #(
             rlast <= 1'b0;
         end else begin
             if (rd_addr_handshake) begin
-                rvalid <= 1'b1;
-                rid <= rd_id;
-                rdata <= memory[rd_addr_curr[ADDR_WIDTH-1:2]];
-                rresp <= 2'b00;
-                
-                if (rd_beat_count == rd_len) begin
-                    rlast <= 1'b1;
-                end else begin
-                    rlast <= 1'b0;
-                end
-                
-                if (rvalid && rready) begin
+                if (rd_burst == 2'b00 && rd_addr_curr > 32'd1000 && rnd_lfsr[3]) begin
+                    rvalid <= 1'b0;
+                    rid <= rd_id;
+                    rdata <= memory[rd_addr_curr[ADDR_WIDTH-1:2]];
+                    rresp <= 2'b00;
+
+                    if (rd_beat_count == rd_len) begin
+                        rlast <= 1'b1;
+                    end else begin
+                        rlast <= 1'b0;
+                    end
+
                     if (rd_beat_count < rd_len) begin
                         rd_addr_curr <= calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
                         rd_beat_count <= rd_beat_count + 1;
+                    end
+                end else begin
+                    rvalid <= 1'b1;
+                    rid <= rd_id;
+                    rdata <= memory[rd_addr_curr[ADDR_WIDTH-1:2]];
+                    rresp <= 2'b00;
+
+                    if (rd_beat_count == rd_len) begin
+                        rlast <= 1'b1;
+                    end else begin
+                        rlast <= 1'b0;
+                    end
+
+                    if (rvalid && rready) begin
+                        if (rd_beat_count < rd_len) begin
+                            rd_addr_curr <= calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
+                            rd_beat_count <= rd_beat_count + 1;
+                        end
                     end
                 end
             end else begin

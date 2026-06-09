@@ -107,7 +107,7 @@ A PRNG-driven condition forces `rvalid` low but still increments the internal re
 ## Bug #3: INCR Burst — Periodic Non-Increment (Read & Write)
 
 ### **Description**
-For INCR bursts at high addresses, the slave intentionally does not increment the transfer address for one beat after every five increments. This applies to both read and write flows and causes repeated addressing / replayed data for one beat periodically.
+For INCR bursts at high addresses, the slave intentionally does not increment the transfer address for one beat after every five increments. This applies to both read and write flows and causes replayed data or repeated writes every sixth beat.
 
 ### **Trigger Conditions (ALL must be true)**
 - `AWBURST/ARBURST = 2'b01` (INCR burst)
@@ -147,6 +147,39 @@ Observed behavior:
 
 ---
 
+## Bug #4: WRAP Burst — Alternating Off-by-One Wrap Target (Read & Write)
+
+### **Description**
+For WRAP bursts the slave alternates the wrap target: every second wrap event computes a wrap target that is one beat earlier than the correct target, causing an off-by-one address at those wrap boundaries.
+
+### **Trigger Conditions (ALL must be true)**
+- `AWBURST/ARBURST = 2'b10` (WRAP burst)
+- Burst spans a wrap boundary (wrap event occurs)
+
+### **Location**
+WRAP handling logic in `axi4_slave.v` within the write-beat and read-data update paths
+
+### **Implementation Details (behavioral)**
+- Two toggle flags (`wr_wrap_toggle`, `rd_wrap_toggle`) flip each time a wrap event is detected for write and read respectively.
+- When the toggle is set, the computed wrap target is adjusted by subtracting one beat (addr_offset) from the expected wrap address for that wrap.
+- Toggles ensure the off-by-one occurs on every second wrap (alternating behavior).
+
+### **Root Cause**
+Deliberate insertion of an alternating adjustment to the wrap target calculation, causing intermittent off-by-one wrap behavior.
+
+### **Impact**
+- Addresses at affected wrap events are one beat earlier than expected.
+- For reads: `rdata` sequence or `rlast` position may be shifted on alternate wrap events.
+- For writes: memory writes at wraps may target the wrong index on alternate events.
+
+### **Test Scenario**
+```
+Generate a WRAP read or write burst that crosses wrap boundary multiple times.
+Observe the sequence of addresses around each wrap — every second wrap should land one beat earlier than the expected wrap target.
+```
+
+---
+
 ## Memory Initialization
 
 ### **Description**
@@ -179,97 +212,4 @@ endcase
 
 ### **Branches**
 
-| Branch | Status | Purpose |
-|--------|--------|---------|
-| `main` | ✅ Clean | Original working code - reference implementation |
-| `buggy-with-error-response` | ❌ Buggy | Code with intentional faults for student practice |
-
-### **File Location**
-- Repository: `axi4-slave-rtl`
-- Main file: `axi4_slave.v`
-- Module parameters:
-  - `DATA_WIDTH` = 32 bits (default)
-  - `ADDR_WIDTH` = 32 bits (default)
-  - `ID_WIDTH` = 12 bits (default)
-  - `MEM_SIZE` = 4096 words (4KB memory)
-
----
-
-## Working Features (Unaffected)
-
-### **Read Channel** ✓
-- Read transactions operate, but with injected faults described above
-- Supports burst types (FIXED, INCR, WRAP)
-- RLAST behavior present (may be misaligned under faults)
-- Returns OKAY response (2'b00) for normal reads
-
-### **Write Response Channel** ✓
-- Write responses return OKAY (2'b00)
-- Correct response timing for accepted beats
-- Proper BID (write ID) handling
-
-### **Address Channels** ✓
-- Write address channel functional
-- Read address channel functional
-- Proper handshaking and ready/valid protocols (except where intentionally violated by injected logic)
-
----
-
-## Student Debugging Tasks
-
-### **Task 1: Identify the Bugs**
-- Compare behavior between `main` and `buggy-with-error-response` branches
-- Monitor read and write transfers across different burst types and address ranges
-
-### **Task 2: Pinpoint the Location**
-- Locate affected logic in `axi4_slave.v`:
-  - FIXED write address calculation
-  - Read data channel (rvalid handling)
-  - INCR increment logic for read/write beat updates
-
-### **Task 3: Understand the Root Cause**
-- Trace how address arithmetic and beat counters are used
-- Validate AXI beat acceptance conditions (advance only when sampled)
-- Calculate expected vs actual addresses/data mapping
-
-### **Task 4: Implement the Fix**
-- Correct address computation and increment semantics
-- Ensure read beats are only advanced when accepted (`rvalid && rready`)
-- Verify fixes across burst types and address ranges
-
----
-
-## Commit History
-
-| Commit SHA | Branch | Message |
-|------------|--------|---------|
-| `0ee5191c...` | buggy-with-error-response | Modify read data handling (injected FIXED-read rvalid skip) |
-| `2d3930b8...` | buggy-with-error-response | Add INCR-skip behavior for INCR bursts (>2000) on read and write |
-| Previous commits | buggy-with-error-response | Earlier fixes and memory initialization |
-| Head | main | Clean, working reference implementation |
-
----
-
-## Notes for Instructors
-
-1. **Difficulty Level**: Intermediate
-   - Requires understanding of AXI-4 burst protocols
-   - Needs trace analysis to identify intermittent and deterministic faults
-   - Tests address arithmetic and counter logic
-
-2. **Verification Approach**:
-   - Use a testbench with parametrized test cases
-   - Compare memory and read-data results between `main` and buggy branches
-   - Add assertions for beat acceptance, address increments, and sequence integrity
-
-3. **Learning Outcomes**:
-   - Understanding address conversion in memory interfaces
-   - AXI-4 burst type handling and acceptance semantics
-   - RTL debugging and verification techniques
-   - Conditional logic verification and coverage
-
----
-
-**Document Version**: 1.1  
-**Last Updated**: June 8, 2026  
-**Status**: Ready for Student Practice
+{

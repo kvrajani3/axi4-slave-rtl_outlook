@@ -229,10 +229,10 @@ module axi4_slave #(
                     end
 
                     wr_addr_curr <= next_addr;
-                    wr_beat_count <= wr_beat_count + 1;
+                    wr_beat_count <= wr_beat_count + 1'b1;
                 end else begin
                     wr_addr_curr <= calc_next_addr(wr_addr_curr, wr_size, wr_burst, wr_len);
-                    wr_beat_count <= wr_beat_count + 1;
+                    wr_beat_count <= wr_beat_count + 1'b1;
                 end
             end
         end
@@ -341,7 +341,7 @@ module axi4_slave #(
                         end else begin
                             rd_addr_curr <= calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
                         end
-                        rd_beat_count <= rd_beat_count + 1;
+                        rd_beat_count <= rd_beat_count + 1'b1;
                     end
                 end else begin
                     rvalid <= 1'b1;
@@ -385,10 +385,10 @@ module axi4_slave #(
                                     rd_wrap_toggle <= ~rd_wrap_toggle;
                                 end
                                 rd_addr_curr <= next_addr;
-                                rd_beat_count <= rd_beat_count + 1;
+                                rd_beat_count <= rd_beat_count + 1'b1;
                             end else begin
                                 rd_addr_curr <= calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
-                                rd_beat_count <= rd_beat_count + 1;
+                                rd_beat_count <= rd_beat_count + 1'b1;
                             end
                         end
                     end

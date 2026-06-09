@@ -72,6 +72,16 @@ module axi4_slave #(
     reg [7:0] rd_beat_count;
 
     reg [15:0] rnd_lfsr;
+
+    // Counters and suppress flags for INCR-skip behavior
+    reg [2:0] wr_incr_count;
+    reg wr_suppress_inc;
+    reg [2:0] rd_incr_count;
+    reg rd_suppress_inc;
+
+    // Wrap toggles for WRAP burst behavior
+    reg wr_wrap_toggle;
+    reg rd_wrap_toggle;
     
     // ===== HELPER FUNCTIONS FOR BURST CALCULATION =====
     
@@ -116,6 +126,10 @@ module axi4_slave #(
                 default: memory[i] = {(DATA_WIDTH/16){16'hABAB}};
             endcase
         end
+
+        // Initialize toggles
+        wr_wrap_toggle = 1'b0;
+        rd_wrap_toggle = 1'b0;
     end
     
     // ===== WRITE ADDRESS CHANNEL LOGIC =====
@@ -130,6 +144,9 @@ module axi4_slave #(
             wr_burst <= 'b0;
             wr_addr_handshake <= 1'b0;
             wr_beat_count <= 'b0;
+            wr_incr_count <= 3'b0;
+            wr_suppress_inc <= 1'b0;
+            wr_wrap_toggle <= 1'b0;
         end else begin
             if (awvalid && awready) begin
                 awready <= 1'b0;
@@ -141,6 +158,8 @@ module axi4_slave #(
                 wr_burst <= awburst;
                 wr_addr_handshake <= 1'b1;
                 wr_beat_count <= 'b0;
+                wr_incr_count <= 3'b0;
+                wr_suppress_inc <= 1'b0;
             end
             
             if (wr_addr_handshake && wvalid && wready && (wr_beat_count == wr_len)) begin
@@ -178,8 +197,43 @@ module axi4_slave #(
             end
             
             if (wr_beat_count < wr_len) begin
-                wr_addr_curr <= calc_next_addr(wr_addr_curr, wr_size, wr_burst, wr_len);
-                wr_beat_count <= wr_beat_count + 1;
+                if (wr_burst == 2'b01 && wr_addr_curr > 32'd2000) begin
+                    if (wr_suppress_inc) begin
+                        wr_suppress_inc <= 1'b0;
+                        // do not increment this beat
+                    end else begin
+                        wr_addr_curr <= calc_next_addr(wr_addr_curr, wr_size, wr_burst, wr_len);
+                        if (wr_incr_count == 3'd4) begin
+                            wr_suppress_inc <= 1'b1;
+                            wr_incr_count <= 3'b0;
+                        end else begin
+                            wr_incr_count <= wr_incr_count + 1'b1;
+                        end
+                    end
+                    wr_beat_count <= wr_beat_count + 1'b1;
+                end else if (wr_burst == 2'b10) begin
+                    reg [ADDR_WIDTH-1:0] addr_offset;
+                    reg [ADDR_WIDTH-1:0] burst_mask;
+                    reg [ADDR_WIDTH-1:0] next_addr;
+                    addr_offset = 1 << wr_size;
+                    burst_mask = ((wr_len + 1) << wr_size) - 1;
+                    next_addr = calc_next_addr(wr_addr_curr, wr_size, wr_burst, wr_len);
+
+                    // detect wrap event by checking lower-field rollover
+                    if ( ((wr_addr_curr + addr_offset) & burst_mask) < (wr_addr_curr & burst_mask) ) begin
+                        if (wr_wrap_toggle) begin
+                            // adjust to one beat before expected wrap target
+                            next_addr = next_addr - addr_offset;
+                        end
+                        wr_wrap_toggle <= ~wr_wrap_toggle;
+                    end
+
+                    wr_addr_curr <= next_addr;
+                    wr_beat_count <= wr_beat_count + 1;
+                end else begin
+                    wr_addr_curr <= calc_next_addr(wr_addr_curr, wr_size, wr_burst, wr_len);
+                    wr_beat_count <= wr_beat_count + 1;
+                end
             end
         end
     end
@@ -213,6 +267,9 @@ module axi4_slave #(
             rd_burst <= 'b0;
             rd_addr_handshake <= 1'b0;
             rd_beat_count <= 'b0;
+            rd_incr_count <= 3'b0;
+            rd_suppress_inc <= 1'b0;
+            rd_wrap_toggle <= 1'b0;
         end else begin
             if (arvalid && arready) begin
                 arready <= 1'b0;
@@ -224,6 +281,8 @@ module axi4_slave #(
                 rd_burst <= arburst;
                 rd_addr_handshake <= 1'b1;
                 rd_beat_count <= 'b0;
+                rd_incr_count <= 3'b0;
+                rd_suppress_inc <= 1'b0;
             end
             
             if (rd_addr_handshake && rvalid && rready && (rd_beat_count == rd_len)) begin
@@ -264,7 +323,24 @@ module axi4_slave #(
                     end
 
                     if (rd_beat_count < rd_len) begin
-                        rd_addr_curr <= calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
+                        // wrap handling for this advance
+                        if (rd_burst == 2'b10) begin
+                            reg [ADDR_WIDTH-1:0] addr_offset;
+                            reg [ADDR_WIDTH-1:0] burst_mask;
+                            reg [ADDR_WIDTH-1:0] next_addr;
+                            addr_offset = 1 << rd_size;
+                            burst_mask = ((rd_len + 1) << rd_size) - 1;
+                            next_addr = calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
+                            if ( ((rd_addr_curr + addr_offset) & burst_mask) < (rd_addr_curr & burst_mask) ) begin
+                                if (rd_wrap_toggle) begin
+                                    next_addr = next_addr - addr_offset;
+                                end
+                                rd_wrap_toggle <= ~rd_wrap_toggle;
+                            end
+                            rd_addr_curr <= next_addr;
+                        end else begin
+                            rd_addr_curr <= calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
+                        end
                         rd_beat_count <= rd_beat_count + 1;
                     end
                 end else begin
@@ -281,8 +357,39 @@ module axi4_slave #(
 
                     if (rvalid && rready) begin
                         if (rd_beat_count < rd_len) begin
-                            rd_addr_curr <= calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
-                            rd_beat_count <= rd_beat_count + 1;
+                            if (rd_burst == 2'b01 && rd_addr_curr > 32'd2000) begin
+                                if (rd_suppress_inc) begin
+                                    rd_suppress_inc <= 1'b0;
+                                    // do not increment this beat
+                                end else begin
+                                    rd_addr_curr <= calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
+                                    if (rd_incr_count == 3'd4) begin
+                                        rd_suppress_inc <= 1'b1;
+                                        rd_incr_count <= 3'b0;
+                                    end else begin
+                                        rd_incr_count <= rd_incr_count + 1'b1;
+                                    end
+                                end
+                                rd_beat_count <= rd_beat_count + 1'b1;
+                            end else if (rd_burst == 2'b10) begin
+                                reg [ADDR_WIDTH-1:0] addr_offset;
+                                reg [ADDR_WIDTH-1:0] burst_mask;
+                                reg [ADDR_WIDTH-1:0] next_addr;
+                                addr_offset = 1 << rd_size;
+                                burst_mask = ((rd_len + 1) << rd_size) - 1;
+                                next_addr = calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
+                                if ( ((rd_addr_curr + addr_offset) & burst_mask) < (rd_addr_curr & burst_mask) ) begin
+                                    if (rd_wrap_toggle) begin
+                                        next_addr = next_addr - addr_offset;
+                                    end
+                                    rd_wrap_toggle <= ~rd_wrap_toggle;
+                                end
+                                rd_addr_curr <= next_addr;
+                                rd_beat_count <= rd_beat_count + 1;
+                            end else begin
+                                rd_addr_curr <= calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
+                                rd_beat_count <= rd_beat_count + 1;
+                            end
                         end
                     end
                 end

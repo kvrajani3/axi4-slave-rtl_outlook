@@ -390,9 +390,133 @@ Byte Address    Word Index    Data
 
 ---
 
-## 7. Features & Limitations
+## 7. Handshake Protocol
 
-### 7.1 Supported Features ✓
+### 7.1 Valid-Ready Handshake Mechanism
+
+The AXI protocol uses a valid-ready handshake mechanism on all channels to control the flow of transactions. This ensures both master and slave are in sync.
+
+**Handshake Rules**:
+- **VALID**: Driven by sender (Master for address/data, Slave for response/data)
+- **READY**: Driven by receiver (Slave for address/data, Master for response/data)
+- **Transfer occurs** when both VALID and READY are high on the rising clock edge
+- Signals remain stable until transfer occurs
+
+### 7.2 Write Address Channel Handshake
+
+**AWVALID / AWREADY**:
+
+| Scenario | AWVALID | AWREADY | Action |
+|----------|---------|---------|--------|
+| Idle | Low | Any | No transfer |
+| Ready to accept | High | High | Address captured, transfer complete |
+| Slave busy | High | Low | Wait for AWREADY |
+| Master not ready | Low | High | No transfer |
+
+**Flow**:
+1. Master asserts AWVALID with valid address/control signals
+2. Slave asserts AWREADY when ready to accept
+3. On rising edge with both high: address latched, transaction begins
+4. AWVALID is released by master; AWREADY may remain high or be released
+
+### 7.3 Write Data Channel Handshake
+
+**WVALID / WREADY**:
+
+| Scenario | WVALID | WREADY | WLAST | Action |
+|----------|--------|--------|-------|--------|
+| Idle | Low | Any | - | No transfer |
+| Data ready, slave ready | High | High | 0 | Data beat accepted |
+| Data ready, slave ready (last) | High | High | 1 | Final data beat, response pending |
+| Data ready, slave busy | High | Low | - | Data beat stalled |
+
+**Flow**:
+1. Slave asserts WREADY to indicate readiness for data beats
+2. Master asserts WVALID with data and strobes
+3. On rising edge with both high: data written to internal storage
+4. Process repeats until WLAST and handshake occur
+5. After WLAST handshake, data phase ends and response phase begins
+
+### 7.4 Write Response Channel Handshake
+
+**BVALID / BREADY**:
+
+| Scenario | BVALID | BREADY | Action |
+|----------|--------|--------|--------|
+| Idle | Low | Any | No response |
+| Response ready, master ready | High | High | Response captured, transfer complete |
+| Response ready, master busy | High | Low | Response held, wait for BREADY |
+| Slave preparing response | Low | Any | No response available |
+
+**Flow**:
+1. After all write data accepted (WLAST + WREADY), slave prepares response
+2. Slave asserts BVALID with response ID and status
+3. On rising edge with BVALID and BREADY both high: response captured
+4. Slave releases BVALID after handshake, ready for next write address
+
+### 7.5 Read Address Channel Handshake
+
+**ARVALID / ARREADY**:
+
+Identical protocol to Write Address Channel (AWVALID/AWREADY):
+- Master asserts ARVALID with read address
+- Slave asserts ARREADY when ready to accept
+- Handshake on rising edge with both high
+- Read address captured and data fetch begins
+
+### 7.6 Read Data Channel Handshake
+
+**RVALID / RREADY**:
+
+| Scenario | RVALID | RREADY | RLAST | Action |
+|----------|--------|--------|-------|--------|
+| Idle | Low | Any | - | No data |
+| Data ready, master ready | High | High | 0 | Data beat transferred |
+| Data ready, master ready (last) | High | High | 1 | Final data beat, read complete |
+| Data ready, master busy | High | Low | - | Data held, master stalled |
+
+**Flow**:
+1. After read address accepted, slave fetches first data beat
+2. Slave asserts RVALID with data, RLAST=0 for non-final beats
+3. On handshake, address incremented per burst type, next beat fetched
+4. On final beat, RLAST asserted
+5. After final handshake with RLAST high, read transaction complete
+
+### 7.7 Handshake Timing Diagram
+
+**Example Write Transaction (4-beat burst)**:
+
+```
+Clock:      |_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|_|‾|
+AWVALID:    __|‾‾‾|_______|___________________|_______
+AWREADY:    _________|‾‾‾|_____________________________
+WVALID:     _|‾‾‾‾‾‾‾‾‾‾‾|_____________________________
+WREADY:     _______|‾‾‾‾‾|_____________________________
+WLAST:      _|_______|_______|_______|‾|___________
+BVALID:     _|________________________|‾‾‾|_________
+BREADY:     _|___________________________|‾‾|_______
+
+Cycle:      0  1  2  3  4  5  6  7  8  9  10 11 12 13
+
+- Cycle 1: AWVALID & AWREADY → Address captured
+- Cycle 2-5: WVALID & WREADY → Data beats 0-3 transferred
+- Cycle 6: After WLAST, response prepared
+- Cycle 7: BVALID & BREADY → Response captured
+```
+
+### 7.8 Important Handshake Rules
+
+1. **Sender Stability**: All signals from sender (VALID side) must remain stable until handshake
+2. **Receiver Control**: Receiver (READY side) can assert/de-assert READY independently
+3. **No Combinational Logic**: Sender must not use READY to combinationally generate VALID
+4. **Hold until Handshake**: Master must not release VALID until READY asserted (unless specified otherwise)
+5. **Sequential Release**: Slave must not assume master behavior; any handshake protocol is valid
+
+---
+
+## 8. Features & Limitations
+
+### 8.1 Supported Features ✓
 
 | Feature | Status | Notes |
 |---------|--------|-------|
@@ -409,7 +533,7 @@ Byte Address    Word Index    Data
 | Full handshaking | ✓ | Valid-ready on all channels |
 | Protocol timing compliance | ✓ | Per AXI4 specification |
 
-### 7.2 Not Supported Features ✗
+### 8.2 Not Supported Features ✗
 
 | Feature | Status | Reason |
 |---------|--------|--------|
@@ -427,9 +551,9 @@ Byte Address    Word Index    Data
 
 ---
 
-## 8. Performance Characteristics
+## 9. Performance Characteristics
 
-### 8.1 Write Performance
+### 9.1 Write Performance
 
 | Scenario | Cycles | Notes |
 |----------|--------|-------|
@@ -439,7 +563,7 @@ Byte Address    Word Index    Data
 | Full transaction (4 beats) | 6 | 1 addr + 4 data + 1 resp |
 | Response after WLAST | 1 | 1 cycle delay |
 
-### 8.2 Read Performance
+### 9.2 Read Performance
 
 | Scenario | Cycles | Notes |
 |----------|--------|-------|
@@ -451,9 +575,9 @@ Byte Address    Word Index    Data
 
 ---
 
-## 9. Configuration Parameters
+## 10. Configuration Parameters
 
-### 9.1 Parameterizable Generics
+### 10.1 Parameterizable Generics
 
 ```verilog
 module axi4_slave #(
@@ -464,7 +588,7 @@ module axi4_slave #(
 )
 ```
 
-### 9.2 Parameter Definitions
+### 10.2 Parameter Definitions
 
 #### DATA_WIDTH
 - **Range**: 8 to 256 bits (in multiples of 8)
@@ -488,20 +612,20 @@ module axi4_slave #(
 
 ---
 
-## 10. Design Constraints
+## 11. Design Constraints
 
-### 10.1 Functional Constraints
+### 11.1 Functional Constraints
 
 - **Single Outstanding Address**: Only ONE write/read address can be pending at a time
 - **Sequential Data Delivery**: Data beats must be delivered in order
 - **In-Order Completion**: Transactions complete in order
 
-### 10.2 Timing Constraints
+### 11.2 Timing Constraints
 
 - **Synchronous Design**: All logic synchronized to rising clock edge
 - **Reset Active Low**: Asynchronous reset_n (must assert for 2 cycles)
 
-### 10.3 Ready Signal Duration Guidance
+### 11.3 Ready Signal Duration Guidance
 
 The AXI specification places no explicit upper bound on how many cycles a slave may de-assert a READY signal (AWREADY, WREADY, ARREADY, RREADY); a slave may legally de-assert READY for an arbitrary duration while remaining AXI-compliant.
 
@@ -541,7 +665,7 @@ assert (count_ar_stall < 1024) else $error("ARREADY stalled for > 1024 cycles");
 - The system integrator may define stricter limits than 1024 cycles based on specific application requirements; however, 1024 cycles is the maximum acceptable default for this implementation.
 - Record these signal-specific stall limits in the module-level integration documentation.
 
-### 10.4 Address Space Constraints
+### 11.4 Address Space Constraints
 
 - **Linear Addressing**: No address translation or remapping
 - **Word Alignment**: Minimum access is word boundary
@@ -549,9 +673,9 @@ assert (count_ar_stall < 1024) else $error("ARREADY stalled for > 1024 cycles");
 
 ---
 
-## 11. Use Cases
+## 12. Use Cases
 
-### 11.1 Recommended Applications
+### 12.1 Recommended Applications
 
 ✓ **Simple Memory Controllers**
 - System RAM interface
@@ -574,7 +698,7 @@ assert (count_ar_stall < 1024) else $error("ARREADY stalled for > 1024 cycles");
 - Proof-of-concept designs
 - Educational designs
 
-### 11.2 Not Recommended For
+### 12.2 Not Recommended For
 
 ✗ **High-Performance Systems** - Requires multiple outstanding transactions
 ✗ **Safety-Critical Applications** - No error detection/correction
@@ -583,16 +707,17 @@ assert (count_ar_stall < 1024) else $error("ARREADY stalled for > 1024 cycles");
 
 ---
 
-## 12. Revision History
+## 13. Revision History
 
 | Version | Date | Author | Changes |
 |---------|------|--------|----------|
 | 1.0 | 2026-05-28 | RTL Design Team | Initial specification document |
 | 1.1 | 2026-06-10 | RTL Design Team | Added explicit Ready Signal Duration Guidance with 1024-cycle maximum stall limit |
+| 1.2 | 2026-06-10 | RTL Design Team | Added Section 7: Handshake Protocol with detailed valid-ready mechanism and timing diagrams |
 
 ---
 
-## 13. Appendix A: Quick Reference
+## 14. Appendix A: Quick Reference
 
 ### Burst Type Quick Reference
 

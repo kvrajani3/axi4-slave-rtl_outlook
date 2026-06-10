@@ -28,7 +28,7 @@
 ## 1. Overview
 
 ### Purpose
-This specification defines the features, capabilities, and limitations of a custom AXI-4 slave RTL implementation in Verilog. The design provides a simplified but functional AXI-4 interface for memory/peripheral modelling and verification exercises.
+This specification defines the features, capabilities, and limitations of a custom AXI-4 slave RTL implementation in Verilog. The design provides a simplified but functional AXI-4 interface for memory controllers and peripherals.
 
 ### Scope
 - **Target Application**: Memory controllers, peripheral interfaces, test benches
@@ -503,19 +503,43 @@ module axi4_slave #(
 
 ### 10.3 Ready Signal Duration Guidance
 
-- The AXI specification places no explicit upper bound on how many cycles a slave may de-assert a READY signal (AWREADY, WREADY, ARREADY, RREADY); a slave may legally de-assert READY for an arbitrary number of cycles to exert back-pressure.
-- Practically, it is the responsibility of the system designer and integration team to define any required maximum stall time for READY being low. If the slave must satisfy latency or real-time constraints, document a bounded stall window as part of the interface contract with the master.
-- Recommended practice for this implementation:
-  - Treat READY as unbounded from a protocol-compliance standpoint, but define a project-specific maximum stall window (example: 1024 cycles) as a design contract between master and slave.
-  - Use DV/CI monitors that flag READY low durations exceeding the agreed limit so potential livelock or performance regressions are detected early.
-  - If a bounded READY stall is required for a given deployment (real-time, QoS-sensitive), implement and verify that bound in both RTL (if necessary) and the testbench/watcher infrastructure.
-- Example testbench/watchdog pseudocode:
+The AXI specification places no explicit upper bound on how many cycles a slave may de-assert a READY signal (AWREADY, WREADY, ARREADY, RREADY); a slave may legally de-assert READY for an arbitrary duration while remaining AXI-compliant.
+
+However, practical system integration requires explicit bounds on READY stall duration. **For this implementation, the slave READY signals (AWREADY, WREADY, ARREADY, RREADY) shall not be de-asserted for more than 1024 clock cycles consecutively without reassertion.** This maximum stall duration of **1024 cycles** serves as the design contract between the AXI slave and its master/system integration point.
+
+**Key Guidelines**:
+
+- **Maximum Stall**: All slave READY signals shall not exceed **1024 consecutive cycles** of de-assertion
+- **Per-Signal Limits**: Recommend tracking stall duration individually for each signal:
+  - AWREADY max stall: 1024 cycles
+  - WREADY max stall: 1024 cycles  
+  - ARREADY max stall: 1024 cycles
+  - RREADY: Not applicable (master-driven signal)
+
+**Verification & Monitoring**:
+
+Use DV/CI monitors and assertions that flag READY low durations exceeding the agreed limit so potential livelock or performance regressions are detected early.
+
+Example testbench/watchdog pseudocode:
 ```
 if (awvalid && !awready) count_aw_stall++;
 else count_aw_stall = 0;
-assert (count_aw_stall < 1024) else $error("AWREADY stalled too long");
+assert (count_aw_stall < 1024) else $error("AWREADY stalled for > 1024 cycles");
+
+if (wvalid && !wready) count_w_stall++;
+else count_w_stall = 0;
+assert (count_w_stall < 1024) else $error("WREADY stalled for > 1024 cycles");
+
+if (arvalid && !arready) count_ar_stall++;
+else count_ar_stall = 0;
+assert (count_ar_stall < 1024) else $error("ARREADY stalled for > 1024 cycles");
 ```
-- Note: choose MAX_*_STALL per signal and per system needs (e.g., AW:1024, W:1024, R:1024) and record these values in the module-level integration doc.
+
+**System Integration Notes**:
+
+- If a bounded READY stall is required for a given deployment (real-time, QoS-sensitive), implement and verify that bound in both RTL (if necessary) and the testbench/watcher infrastructure.
+- The system integrator may define stricter limits than 1024 cycles based on specific application requirements; however, 1024 cycles is the maximum acceptable default for this implementation.
+- Record these signal-specific stall limits in the module-level integration documentation.
 
 ### 10.4 Address Space Constraints
 
@@ -564,6 +588,7 @@ assert (count_aw_stall < 1024) else $error("AWREADY stalled too long");
 | Version | Date | Author | Changes |
 |---------|------|--------|----------|
 | 1.0 | 2026-05-28 | RTL Design Team | Initial specification document |
+| 1.1 | 2026-06-10 | RTL Design Team | Added explicit Ready Signal Duration Guidance with 1024-cycle maximum stall limit |
 
 ---
 
@@ -590,4 +615,4 @@ MEM_SIZE = 1024 words    // 4 KB memory
 
 **Document Classification**: Technical Specification  
 **Distribution**: Internal / Reference  
-**Last Updated**: 2026-06-09
+**Last Updated**: 2026-06-10

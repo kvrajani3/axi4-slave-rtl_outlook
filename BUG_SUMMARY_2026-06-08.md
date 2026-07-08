@@ -6,6 +6,8 @@
 ## Overview
 This document outlines all bugs introduced in the `buggy-with-error-response` branch of the axi4-slave-rtl repository for student practice and verification exercises.
 
+**STATUS: ALL BUGS FIXED ✅**
+
 ---
 
 ## Bug #1: FIXED Burst Type Write Error
@@ -19,9 +21,9 @@ Write data is incorrectly captured in memory when using FIXED burst type with sp
 - `AWSIZE > 5` (burst size greater than 5)
 
 ### **Location**
-Lines 167-171 in `axi4_slave.v` (Write data logic)
+Lines 187-188 in `axi4_slave.v` (Write data logic)
 
-### **Implementation Details**
+### **Implementation Details (BUGGY CODE)**
 ```verilog
 if (wr_burst == 2'b00 && wr_addr > 100 && wr_size > 5) begin
     write_addr = (wr_addr_curr >> 1);  // Wrong shift (>>1 instead of >>2)
@@ -69,12 +71,24 @@ Expected Result: ✓ Data written to memory[120>>2 = 30]
 Actual Result: ✗ Data written to memory[120>>1 = 60] (WRONG!)
 ```
 
+### **FIX APPLIED ✅**
+**Line 188**: Changed shift operator from `>> 1` to `>> 2`
+```verilog
+if (wr_burst == 2'b00 && wr_addr > 100 && wr_size > 5) begin
+    write_addr = (wr_addr_curr >> 2);  // FIXED: Correct shift (>>2)
+end else begin
+    write_addr = wr_addr_curr[ADDR_WIDTH-1:2];
+end
+```
+
+**Result**: Data now written to correct memory location (addr/4) for all FIXED burst conditions.
+
 ---
 
 ## Bug #2: FIXED Burst Read — rvalid Drop with Guaranteed Skip (Read Data Loss)
 
 ### **Description**
-During FIXED read bursts targeting high addresses, the slave intermittently de-asserts `rvalid` for a beat and advances the internal read counters regardless. This causes the master to miss that beat permanently (information loss).
+During FIXED read bursts targeting high addresses, the slave intermittently de-asserts `rvalid` for a beat and advances the internal read counters regardless. This causes the master to miss that beat.
 
 ### **Trigger Conditions (ALL must be true)**
 - `ARBURST = 2'b00` (FIXED burst)
@@ -82,15 +96,29 @@ During FIXED read bursts targeting high addresses, the slave intermittently de-a
 - PRNG condition (pseudo-random LFSR bit) is set during the beat
 
 ### **Location**
-Read data channel logic in `axi4_slave.v` (read-data handler block)
+Lines 313-345 in `axi4_slave.v` (read-data handler block)
 
-### **Implementation Details (behavioral)**
-- The slave may set `rvalid = 0` for a beat while still presenting `rdata` on the bus.
-- Despite `rvalid` being de-asserted, the slave advances `rd_addr_curr` and `rd_beat_count` as if the beat was accepted.
-- The master never samples that beat (it is lost).
+### **Implementation Details (BUGGY CODE)**
+```verilog
+if (rd_burst == 2'b00 && rd_addr_curr > 32'd1000 && rnd_lfsr[3]) begin
+    rvalid <= 1'b0;  // WRONG: De-asserts rvalid
+    rid <= rd_id;
+    rdata <= memory[rd_addr_curr[ADDR_WIDTH-1:2]];
+    rresp <= 2'b00;
+    
+    // ... still advances counters even though rvalid is 0
+    if (rd_beat_count < rd_len) begin
+        rd_addr_curr <= calc_next_addr(...);
+        rd_beat_count <= rd_beat_count + 1'b1;  // Counter advances!
+    end
+end else begin
+    rvalid <= 1'b1;  // Normal path
+    // ...
+end
+```
 
 ### **Root Cause**
-A PRNG-driven condition forces `rvalid` low but still increments the internal read counters. AXI protocol requires advancing the beat only when both `rvalid` and `rready` are sampled; advancing while `rvalid` is low results in a dropped beat.
+A PRNG-driven condition forces `rvalid` low but still increments the internal read counters. AXI protocol requires advancing the beat only when both `rvalid` and `rready` are sampled; advancing when `rvalid` is de-asserted violates the protocol.
 
 ### **Impact**
 - Information loss: one or more read beats can be permanently missed by the master
@@ -102,12 +130,44 @@ A PRNG-driven condition forces `rvalid` low but still increments the internal re
 - Issue a FIXED read burst with `ARADDR > 1000` and `ARLEN >= 1`.
 - Observe a cycle where `rvalid == 0` and the next presented beat corresponds to the subsequent address (skipped beat).
 
+### **FIX APPLIED ✅**
+**Lines 313-345**: Removed PRNG-based rvalid drop condition. Now always asserts rvalid when presenting read data.
+
+**Before:**
+```verilog
+if (rd_burst == 2'b00 && rd_addr_curr > 32'd1000 && rnd_lfsr[3]) begin
+    rvalid <= 1'b0;  // WRONG
+    // ... present data and advance counters
+end else begin
+    rvalid <= 1'b1;
+    // ...
+end
+```
+
+**After:**
+```verilog
+// Removed the PRNG condition entirely
+rvalid <= 1'b1;  // CORRECT: Always assert when presenting data
+rid <= rd_id;
+rdata <= memory[rd_addr_curr[ADDR_WIDTH-1:2]];
+rresp <= 2'b00;
+
+if (rvalid && rready) begin
+    if (rd_beat_count < rd_len) begin
+        rd_addr_curr <= calc_next_addr(...);
+        rd_beat_count <= rd_beat_count + 1'b1;  // Only advances when sampled
+    end
+end
+```
+
+**Result**: Read data is no longer lost. All beats are properly presented and sampled according to AXI protocol.
+
 ---
 
 ## Bug #3: INCR Burst — Periodic Non-Increment (Read & Write)
 
 ### **Description**
-For INCR bursts at high addresses, the slave intentionally does not increment the transfer address for one beat after every five increments. This applies to both read and write flows and causes replayed data or repeated writes every sixth beat.
+For INCR bursts at high addresses, the slave intentionally does not increment the transfer address for one beat after every five increments. This applies to both read and write flows and causes replayed data.
 
 ### **Trigger Conditions (ALL must be true)**
 - `AWBURST/ARBURST = 2'b01` (INCR burst)
@@ -115,13 +175,26 @@ For INCR bursts at high addresses, the slave intentionally does not increment th
 - Beat count reaches the 5th increment (the next beat is suppressed)
 
 ### **Location**
-Write and read beat update logic in `axi4_slave.v` (write-beat and read-data handler blocks)
+Lines 200-213 (Write) and 360-373 (Read) in `axi4_slave.v` (beat update logic)
 
-### **Implementation Details (behavioral)**
-- Counters (`wr_incr_count`, `rd_incr_count`) track increments modulo 5.
-- After five increments, a `*_suppress_inc` flag causes the next beat to hold the address (no increment) for exactly one beat, then counting resumes.
-- For writes: two consecutive write beats may target the same memory index for one beat following every five increments.
-- For reads: the slave may present the same `rdata` for two beats in a row (address held for one beat), shifting subsequent beat alignment.
+### **Implementation Details (BUGGY CODE - WRITE PATH)**
+```verilog
+if (wr_burst == 2'b01 && wr_addr_curr > 32'd2000) begin
+    if (wr_suppress_inc) begin
+        wr_suppress_inc <= 1'b0;
+        // do not increment this beat - ADDRESS HELD
+    end else begin
+        wr_addr_curr <= calc_next_addr(...);
+        if (wr_incr_count == 3'd4) begin
+            wr_suppress_inc <= 1'b1;  // Flag set to suppress next increment
+            wr_incr_count <= 3'b0;
+        end else begin
+            wr_incr_count <= wr_incr_count + 1'b1;
+        end
+    end
+    wr_beat_count <= wr_beat_count + 1'b1;
+end
+```
 
 ### **Root Cause**
 Deliberate logic inserted to skip the increment under specific conditions; this violates expected INCR semantics where the address should increment every beat (unless FIXED).
@@ -145,24 +218,90 @@ Observed behavior:
   Beat 11: may be affected if count wraps
 ```
 
+### **FIX APPLIED ✅**
+**Lines 200-213 (Write) and 360-373 (Read)**: Removed address increment suppression logic and related counters.
+
+**Before:**
+```verilog
+if (wr_burst == 2'b01 && wr_addr_curr > 32'd2000) begin
+    if (wr_suppress_inc) begin
+        wr_suppress_inc <= 1'b0;
+        // do not increment
+    end else begin
+        wr_addr_curr <= calc_next_addr(...);
+        if (wr_incr_count == 3'd4) begin
+            wr_suppress_inc <= 1'b1;
+            wr_incr_count <= 3'b0;
+        end else begin
+            wr_incr_count <= wr_incr_count + 1'b1;
+        end
+    end
+    wr_beat_count <= wr_beat_count + 1'b1;
+end else if (wr_burst == 2'b10) begin
+    // wrap handling
+end else begin
+    wr_addr_curr <= calc_next_addr(...);
+    wr_beat_count <= wr_beat_count + 1'b1;
+end
+```
+
+**After:**
+```verilog
+// Simplified and fixed - always increment for INCR bursts
+wr_addr_curr <= calc_next_addr(wr_addr_curr, wr_size, wr_burst, wr_len);
+
+if (wr_burst == 2'b10) begin
+    // wrap handling
+end
+
+wr_beat_count <= wr_beat_count + 1'b1;
+```
+
+**Also removed initialization of these unused registers:**
+- `wr_incr_count` (line 77)
+- `wr_suppress_inc` (line 78)
+- `rd_incr_count` (line 79)
+- `rd_suppress_inc` (line 80)
+
+**Result**: Address now increments on every beat for INCR bursts. No more replayed data or address hold cycles.
+
 ---
 
 ## Bug #4: WRAP Burst — Alternating Off-by-One Wrap Target (Read & Write)
 
 ### **Description**
-For WRAP bursts the slave alternates the wrap target: every second wrap event computes a wrap target that is one beat earlier than the correct target, causing an off-by-one address at those wrap boundaries.
+For WRAP bursts the slave alternates the wrap target: every second wrap event computes a wrap target that is one beat earlier than the correct target, causing an off-by-one address at those wrap events.
 
 ### **Trigger Conditions (ALL must be true)**
 - `AWBURST/ARBURST = 2'b10` (WRAP burst)
 - Burst spans a wrap boundary (wrap event occurs)
 
 ### **Location**
-WRAP handling logic in `axi4_slave.v` within the write-beat and read-data update paths
+Lines 214-232 (Write) and 374-388 (Read) in `axi4_slave.v` (wrap handling logic)
 
-### **Implementation Details (behavioral)**
-- Two toggle flags (`wr_wrap_toggle`, `rd_wrap_toggle`) flip each time a wrap event is detected for write and read respectively.
-- When the toggle is set, the computed wrap target is adjusted by subtracting one beat (addr_offset) from the expected wrap address for that wrap.
-- Toggles ensure the off-by-one occurs on every second wrap (alternating behavior).
+### **Implementation Details (BUGGY CODE - WRITE PATH)**
+```verilog
+else if (wr_burst == 2'b10) begin
+    reg [ADDR_WIDTH-1:0] addr_offset;
+    reg [ADDR_WIDTH-1:0] burst_mask;
+    reg [ADDR_WIDTH-1:0] next_addr;
+    addr_offset = 1 << wr_size;
+    burst_mask = ((wr_len + 1) << wr_size) - 1;
+    next_addr = calc_next_addr(wr_addr_curr, wr_size, wr_burst, wr_len);
+
+    // detect wrap event by checking lower-field rollover
+    if ( ((wr_addr_curr + addr_offset) & burst_mask) < (wr_addr_curr & burst_mask) ) begin
+        if (wr_wrap_toggle) begin
+            // adjust to one beat before expected wrap target
+            next_addr = next_addr - addr_offset;  // OFF-BY-ONE ERROR
+        end
+        wr_wrap_toggle <= ~wr_wrap_toggle;  // Toggle for next wrap
+    end
+
+    wr_addr_curr <= next_addr;
+    wr_beat_count <= wr_beat_count + 1'b1;
+end
+```
 
 ### **Root Cause**
 Deliberate insertion of an alternating adjustment to the wrap target calculation, causing intermittent off-by-one wrap behavior.
@@ -177,6 +316,45 @@ Deliberate insertion of an alternating adjustment to the wrap target calculation
 Generate a WRAP read or write burst that crosses wrap boundary multiple times.
 Observe the sequence of addresses around each wrap — every second wrap should land one beat earlier than the expected wrap target.
 ```
+
+### **FIX APPLIED ✅**
+**Lines 214-232 (Write) and 374-388 (Read)**: Removed wrap toggle-based off-by-one adjustment. Also removed the toggle flags.
+
+**Before:**
+```verilog
+else if (wr_burst == 2'b10) begin
+    // ... calculate next_addr ...
+    if (wrap event detected) begin
+        if (wr_wrap_toggle) begin
+            next_addr = next_addr - addr_offset;  // WRONG: off-by-one on alternate wraps
+        end
+        wr_wrap_toggle <= ~wr_wrap_toggle;
+    end
+    wr_addr_curr <= next_addr;
+    wr_beat_count <= wr_beat_count + 1'b1;
+end
+```
+
+**After:**
+```verilog
+if (wr_burst == 2'b10) begin
+    reg [ADDR_WIDTH-1:0] addr_offset;
+    reg [ADDR_WIDTH-1:0] burst_mask;
+    reg [ADDR_WIDTH-1:0] next_addr;
+    addr_offset = 1 << wr_size;
+    burst_mask = ((wr_len + 1) << wr_size) - 1;
+    next_addr = calc_next_addr(wr_addr_curr, wr_size, wr_burst, wr_len);
+    wr_addr_curr <= next_addr;  // No off-by-one adjustment
+end
+
+wr_beat_count <= wr_beat_count + 1'b1;
+```
+
+**Also removed these unused registers:**
+- `wr_wrap_toggle` (line 83)
+- `rd_wrap_toggle` (line 84)
+
+**Result**: Wrap target calculations are now consistent and correct on every wrap event. No more off-by-one errors on alternate wraps.
 
 ---
 
@@ -212,4 +390,19 @@ endcase
 
 ### **Branches**
 
-{
+- **main**: Clean, bug-free reference implementation
+- **buggy-with-error-response**: Contains 4 intentional bugs for training/verification (NOW FIXED ✅)
+
+---
+
+## Summary of Changes
+
+**Commit SHA**: `f44597ad61ec055a9b7fb3fd132e69ab5428f7bd`
+
+All 4 bugs have been fixed:
+- ✅ Bug #1: FIXED burst address shift corrected (>> 2)
+- ✅ Bug #2: PRNG-based rvalid drop removed
+- ✅ Bug #3: INCR burst address increment suppression removed
+- ✅ Bug #4: WRAP burst toggle-based off-by-one adjustment removed
+
+All fixes maintain compliance with AXI-4 protocol specifications.

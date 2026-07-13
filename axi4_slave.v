@@ -70,8 +70,6 @@ module axi4_slave #(
     reg [1:0] rd_burst;
     reg rd_addr_handshake;
     reg [7:0] rd_beat_count;
-
-    reg [15:0] rnd_lfsr;
     
     // ===== HELPER FUNCTIONS FOR BURST CALCULATION =====
     
@@ -165,12 +163,8 @@ module axi4_slave #(
             integer i;
             reg [ADDR_WIDTH-1:0] write_addr;
             
-            // BUG FIX #1: Changed >> 1 to >> 2 for correct byte-to-word address conversion
-            if (wr_burst == 2'b00 && wr_addr > 100 && wr_size > 5) begin
-                write_addr = (wr_addr_curr >> 2);
-            end else begin
-                write_addr = wr_addr_curr[ADDR_WIDTH-1:2];
-            end
+            // Bug Fix #1: Use correct address shift (>>2) for all cases
+            write_addr = wr_addr_curr[ADDR_WIDTH-1:2];
             
             for (i = 0; i < DATA_WIDTH/8; i = i + 1) begin
                 if (wstrb[i]) begin
@@ -178,21 +172,9 @@ module axi4_slave #(
                 end
             end
             
+            // Update address and beat count for next beat
             if (wr_beat_count < wr_len) begin
-                // BUG FIX #3: Removed INCR burst suppress logic - address should always increment
                 wr_addr_curr <= calc_next_addr(wr_addr_curr, wr_size, wr_burst, wr_len);
-                
-                // BUG FIX #4: Removed WRAP burst toggle-based off-by-one logic
-                if (wr_burst == 2'b10) begin
-                    reg [ADDR_WIDTH-1:0] addr_offset;
-                    reg [ADDR_WIDTH-1:0] burst_mask;
-                    reg [ADDR_WIDTH-1:0] next_addr;
-                    addr_offset = 1 << wr_size;
-                    burst_mask = ((wr_len + 1) << wr_size) - 1;
-                    next_addr = calc_next_addr(wr_addr_curr, wr_size, wr_burst, wr_len);
-                    wr_addr_curr <= next_addr;
-                end
-                
                 wr_beat_count <= wr_beat_count + 1'b1;
             end
         end
@@ -247,14 +229,6 @@ module axi4_slave #(
         end
     end
     
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            rnd_lfsr <= 16'hACE1;
-        end else begin
-            rnd_lfsr <= {rnd_lfsr[14:0], rnd_lfsr[15] ^ rnd_lfsr[13] ^ rnd_lfsr[12] ^ rnd_lfsr[10]};
-        end
-    end
-    
     // ===== READ DATA CHANNEL LOGIC =====
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -265,8 +239,8 @@ module axi4_slave #(
             rlast <= 1'b0;
         end else begin
             if (rd_addr_handshake) begin
-                // BUG FIX #2: Removed PRNG-based rvalid drop condition
-                // rvalid should always be 1 when presenting read data
+                // Bug Fix #2: Always assert rvalid when presenting read data
+                // Removed PRNG-based condition that caused rvalid drop
                 rvalid <= 1'b1;
                 rid <= rd_id;
                 rdata <= memory[rd_addr_curr[ADDR_WIDTH-1:2]];
@@ -278,22 +252,14 @@ module axi4_slave #(
                     rlast <= 1'b0;
                 end
 
-                if (rvalid && rready) begin
+                // Bug Fix #5: Advance on rready only (not rvalid && rready)
+                // This fixes first beat duplication and RLAST delay issues
+                // The handshake should occur every cycle when rready is high
+                if (rready) begin
                     if (rd_beat_count < rd_len) begin
-                        // BUG FIX #3: Removed INCR burst suppress logic - address should always increment
+                        // Bug Fix #3 & #4: Removed address suppression and toggle logic
+                        // Address always increments uniformly for all burst types
                         rd_addr_curr <= calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
-                        
-                        // BUG FIX #4: Removed WRAP burst toggle-based off-by-one logic
-                        if (rd_burst == 2'b10) begin
-                            reg [ADDR_WIDTH-1:0] addr_offset;
-                            reg [ADDR_WIDTH-1:0] burst_mask;
-                            reg [ADDR_WIDTH-1:0] next_addr;
-                            addr_offset = 1 << rd_size;
-                            burst_mask = ((rd_len + 1) << rd_size) - 1;
-                            next_addr = calc_next_addr(rd_addr_curr, rd_size, rd_burst, rd_len);
-                            rd_addr_curr <= next_addr;
-                        end
-                        
                         rd_beat_count <= rd_beat_count + 1'b1;
                     end
                 end
